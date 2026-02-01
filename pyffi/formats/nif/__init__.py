@@ -483,6 +483,39 @@ class NifFormat(FileFormat):
         def __str__(self):
             return hex(self.get_value())
 
+    class hfloat(BasicBase):
+        """A 16-bit half-precision floating point number."""
+        _is_template = False
+        _has_links = False
+        _has_refs = False
+        _has_strings = False
+
+        def __init__(self, **kwargs):
+            BasicBase.__init__(self, **kwargs)
+            self._value = 0.0
+
+        def get_value(self):
+            return self._value
+
+        def set_value(self, value):
+            self._value = float(value)
+
+        def read(self, stream, data=None):
+            # Python 3.6+ supports 'e' format for half-float
+            self._value = struct.unpack('<e', stream.read(2))[0]
+
+        def write(self, stream, data=None):
+            stream.write(struct.pack('<e', self._value))
+
+        def get_size(self, data=None):
+            return 2
+
+        def get_hash(self, data=None):
+            return self._value
+
+        def __str__(self):
+            return str(self._value)
+
     class Ref(BasicBase):
         """Reference to another block."""
         _is_template = True
@@ -7064,6 +7097,73 @@ class NifFormat(FileFormat):
             for i, strip in enumerate(strips):
                 for j, idx in enumerate(strip):
                     self.points[i][j] = idx
+
+    class BSTriShape:
+        """Helper methods for Skyrim SE BSTriShape meshes.
+
+        Example usage:
+
+        >>> from pyffi.formats.nif import NifFormat
+        >>> block = NifFormat.BSTriShape()
+        >>> # Note: BSTriShape fields would normally be populated from file
+        """
+        def get_triangles(self):
+            """Return list of triangle tuples."""
+            if self.data_size == 0:
+                return []
+            return [(t.v_1, t.v_2, t.v_3) for t in self.triangles]
+
+        def get_vertices(self):
+            """Return list of vertex positions as tuples."""
+            if self.data_size == 0:
+                return []
+            vertices = []
+            for v in self.vertex_data:
+                if hasattr(v, 'vertex'):
+                    vertices.append((v.vertex.x, v.vertex.y, v.vertex.z))
+            return vertices
+
+        def get_normals(self):
+            """Return normals, decompressed from byte format.
+
+            Normals are stored as bytes in range 0-255, representing -1.0 to 1.0.
+            """
+            if self.data_size == 0:
+                return []
+            normals = []
+            for v in self.vertex_data:
+                if hasattr(v, 'normal'):
+                    # Convert from byte (0-255) to float (-1.0 to 1.0)
+                    nx = (v.normal.x - 128) / 127.0
+                    ny = (v.normal.y - 128) / 127.0
+                    nz = (v.normal.z - 128) / 127.0
+                    normals.append((nx, ny, nz))
+            return normals
+
+        def get_uvs(self):
+            """Return UV coordinates as list of tuples."""
+            if self.data_size == 0:
+                return []
+            uvs = []
+            for v in self.vertex_data:
+                if hasattr(v, 'uv'):
+                    uvs.append((v.uv.u, v.uv.v))
+            return uvs
+
+        def get_vertex_colors(self):
+            """Return vertex colors as list of RGBA tuples (0.0-1.0 range)."""
+            if self.data_size == 0:
+                return []
+            colors = []
+            for v in self.vertex_data:
+                if hasattr(v, 'vertex_colors'):
+                    # Convert from byte (0-255) to float (0.0-1.0)
+                    r = v.vertex_colors.r / 255.0
+                    g = v.vertex_colors.g / 255.0
+                    b = v.vertex_colors.b / 255.0
+                    a = v.vertex_colors.a / 255.0
+                    colors.append((r, g, b, a))
+            return colors
 
     class RagdollDescriptor:
         def update_a_b(self, transform):

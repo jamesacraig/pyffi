@@ -150,7 +150,10 @@ class Expression(object):
         elif self._op == '<':
             return left < right
         elif self._op == '/':
-            return left / right
+            # Use integer division and handle division by zero (return 0)
+            if right == 0:
+                return 0
+            return int(left / right)
         elif self._op == '*':
             return left * right
         elif self._op == '+':

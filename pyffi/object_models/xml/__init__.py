@@ -175,6 +175,8 @@ class StructAttribute(object):
         self.ver2 = attrs.get("ver2")
         # user version this member exists, as `int`, and `None` if it exists for all user versions.
         self.userver = attrs.get("userver")
+        # user version 2 this member exists, as `int`, and `None` if it exists for all user versions 2.
+        self.userver2 = attrs.get("userver2")
         # docstring is handled in xml parser's characters function
         self.doc = ""
         # Whether the attribute is abstract or not (read and written).
@@ -202,9 +204,17 @@ class StructAttribute(object):
             try:
                 self.arg = int(self.arg)
             except ValueError:
-                self.arg = cls.name_attribute(self.arg)
+                # Handle nested attribute paths (e.g., "Vertex Desc\Vertex Attributes")
+                # The backslash is already converted to dot by replace_tokens
+                if '.' in self.arg:
+                    # Keep as dot-separated path of normalized names
+                    self.arg = '.'.join(cls.name_attribute(part) for part in self.arg.split('.'))
+                else:
+                    self.arg = cls.name_attribute(self.arg)
         if self.userver:
             self.userver = int(self.userver)
+        if self.userver2:
+            self.userver2 = int(self.userver2)
         if self.ver1:
             self.ver1 = cls.version_number(self.ver1)
         if self.ver2:
@@ -228,6 +238,7 @@ class BitStructAttribute(object):
         self.ver1 = attrs.get("ver1")
         self.ver2 = attrs.get("ver2")
         self.userver = attrs.get("userver")
+        self.userver2 = attrs.get("userver2")
         self.doc = "" # handled in xml parser's characters function
 
         # post-processing
@@ -237,6 +248,8 @@ class BitStructAttribute(object):
             self.cond = Expression(self.cond, cls.name_attribute)
         if self.userver:
             self.userver = int(self.userver)
+        if self.userver2:
+            self.userver2 = int(self.userver2)
         if self.ver1:
             self.ver1 = cls.version_number(self.ver1)
         if self.ver2:

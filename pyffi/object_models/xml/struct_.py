@@ -252,12 +252,12 @@ class StructBase(GlobalNode, metaclass=_MetaStructBase):
         # in a tree view
         self._items = []
         # initialize attributes
+        # For duplicate names, we keep the LAST definition since derived class
+        # attributes come after base class attributes and should take precedence
+        # when they have different types/conditions (e.g., BSTriShape.Vertices
+        # is Vector3 but BSDynamicTriShape.Vertices is Vector4)
         for attr in self._attribute_list:
-            # skip attributes with dupiclate names
-            # (for this to work properly, duplicates must have the same
-            # type, template, argument, arr1, and arr2)
-            if attr.name in names:
-                continue
+            is_duplicate = attr.name in names
             names.add(attr.name)
 
             # things that can only be determined at runtime (rt_xxx)
@@ -265,8 +265,15 @@ class StructBase(GlobalNode, metaclass=_MetaStructBase):
                       else template
             rt_template = attr.template if attr.template != type(None) \
                           else template
-            rt_arg = attr.arg if isinstance(attr.arg, (int, type(None))) \
-                     else getattr(self, attr.arg)
+            if isinstance(attr.arg, (int, type(None))):
+                rt_arg = attr.arg
+            elif '.' in attr.arg:
+                # Handle nested attribute paths like "vertex_desc.vertex_attributes"
+                rt_arg = self
+                for part in attr.arg.split('.'):
+                    rt_arg = getattr(rt_arg, part)
+            else:
+                rt_arg = getattr(self, attr.arg)
 
             # instantiate the class, handling arrays at the same time
             if attr.arr1 == None:
@@ -290,11 +297,13 @@ class StructBase(GlobalNode, metaclass=_MetaStructBase):
                     count1 = attr.arr1, count2 = attr.arr2,
                     parent = self)
 
-            # assign attribute value
+            # assign attribute value (replaces existing for duplicates)
             setattr(self, "_%s_value_" % attr.name, attr_instance)
 
-            # add instance to item list
-            self._items.append(attr_instance)
+            # add instance to item list (only for non-duplicates to avoid
+            # duplicate entries in display/iteration)
+            if not is_duplicate:
+                self._items.append(attr_instance)
 
     def deepcopy(self, block):
         """Copy attributes from a given block (one block class must be a
@@ -354,6 +363,83 @@ class StructBase(GlobalNode, metaclass=_MetaStructBase):
                 hex_ver = "0x%08X" % offset
                 self.logger.debug("* {0}.{1} = {2} : type {3} at {4} offset {5} - ".format(self.__class__.__name__, attr.name, str(out), attr.type_, hex_ver, offset ))  # debug
 
+    def _ensure_correct_storage_type(self, attr, preserve_value=True):
+        """Ensure storage type matches the attribute type for this version.
+
+        This handles duplicate attribute names with different types based on
+        version conditions (e.g., Num Triangles as ushort vs uint, or
+        Vertices as Vector3 vs Vector4 in derived classes).
+
+        :param attr: The attribute definition from _get_filtered_attribute_list
+        :param preserve_value: If True, copy the old value to new storage
+        :return: Tuple of (attr_value, rt_arg) - the storage and runtime argument
+        """
+        attr_value = getattr(self, "_%s_value_" % attr.name)
+        rt_type = attr.type_
+        rt_template = attr.template if attr.template != type(None) else None
+
+        # Get runtime argument (can only be done at runtime)
+        if isinstance(attr.arg, (int, type(None))):
+            rt_arg = attr.arg
+        elif '.' in attr.arg:
+            # Handle nested attribute paths like "vertex_desc.vertex_attributes"
+            rt_arg = self
+            for part in attr.arg.split('.'):
+                rt_arg = getattr(rt_arg, part)
+        else:
+            rt_arg = getattr(self, attr.arg)
+
+        # Check if storage type matches the attribute type
+        needs_recreate = False
+        if attr.arr1 is None:
+            # Non-array: check if type matches
+            if type(attr_value) != rt_type:
+                needs_recreate = True
+        else:
+            # Array: check if element type matches
+            if hasattr(attr_value, '_elementType') and attr_value._elementType != rt_type:
+                needs_recreate = True
+
+        if needs_recreate:
+            # Save the old value to transfer to new storage if requested
+            old_value = None
+            if preserve_value and hasattr(attr_value, 'get_value'):
+                try:
+                    old_value = attr_value.get_value()
+                except Exception:
+                    pass
+
+            # Recreate storage with correct type for this version
+            if attr.arr1 is None:
+                attr_value = rt_type(template=rt_template, argument=rt_arg, parent=self)
+                # Transfer the old value if possible
+                if old_value is not None and hasattr(attr_value, 'set_value'):
+                    try:
+                        attr_value.set_value(old_value)
+                    except Exception:
+                        # Value might not be compatible, use default
+                        if attr.default is not None:
+                            attr_value.set_value(attr.default)
+                elif attr.default is not None:
+                    attr_value.set_value(attr.default)
+            elif attr.arr2 is None:
+                attr_value = Array(
+                    element_type=rt_type,
+                    element_type_template=rt_template,
+                    element_type_argument=rt_arg,
+                    count1=attr.arr1,
+                    parent=self)
+            else:
+                attr_value = Array(
+                    element_type=rt_type,
+                    element_type_template=rt_template,
+                    element_type_argument=rt_arg,
+                    count1=attr.arr1, count2=attr.arr2,
+                    parent=self)
+            setattr(self, "_%s_value_" % attr.name, attr_value)
+
+        return attr_value, rt_arg
+
     def read(self, stream, data):
         """Read structure from stream."""
         # read all attributes
@@ -361,17 +447,12 @@ class StructBase(GlobalNode, metaclass=_MetaStructBase):
             # skip abstract attributes
             if attr.is_abstract:
                 continue
-            # get attribute argument (can only be done at runtime)
-            rt_arg = attr.arg if isinstance(attr.arg, (int, type(None))) \
-                else getattr(self, attr.arg)
+            # Ensure storage type is correct for this version (don't preserve value when reading)
+            attr_value, rt_arg = self._ensure_correct_storage_type(attr, preserve_value=False)
             # read the attribute
-            attr_value = getattr(self, "_%s_value_" % attr.name)
             attr_value.arg = rt_arg
-            # if hasattr(attr, "type_"):
-            #     attr_value._elementType = attr.type_
             self._log_struct(stream, attr)
             attr_value.read(stream, data)
-
 
     def write(self, stream, data):
         """Write structure to stream."""
@@ -380,13 +461,11 @@ class StructBase(GlobalNode, metaclass=_MetaStructBase):
             # skip abstract attributes
             if attr.is_abstract:
                 continue
-            # get attribute argument (can only be done at runtime)
-            rt_arg = attr.arg if isinstance(attr.arg, (int, type(None))) \
-                     else getattr(self, attr.arg)
+            # Ensure storage type is correct for this version (preserve existing value)
+            attr_value, rt_arg = self._ensure_correct_storage_type(attr, preserve_value=True)
             # write the attribute
-            attr_value = getattr(self, "_%s_value_" % attr.name)
             attr_value.arg = rt_arg
-            getattr(self, "_%s_value_" % attr.name).write(stream, data)
+            attr_value.write(stream, data)
             self._log_struct(stream, attr)
 
     def fix_links(self, data):
@@ -455,7 +534,9 @@ class StructBase(GlobalNode, metaclass=_MetaStructBase):
             # skip abstract attributes
             if attr.is_abstract:
                 continue
-            size += getattr(self, "_%s_value_" % attr.name).get_size(data)
+            # Ensure storage type is correct for this version (preserve existing value)
+            attr_value, _ = self._ensure_correct_storage_type(attr, preserve_value=True)
+            size += attr_value.get_size(data)
         return size
 
     def get_hash(self, data=None):
@@ -531,9 +612,11 @@ class StructBase(GlobalNode, metaclass=_MetaStructBase):
         if data is not None:
             version = data.version
             user_version = data.user_version
+            user_version_2 = getattr(data, 'user_version_2', None)
         else:
             version = None
             user_version = None
+            user_version_2 = None
         names = set()
         for attr in self._attribute_list:
             #print(attr.name, version, attr.ver1, attr.ver2) # debug
@@ -551,6 +634,12 @@ class StructBase(GlobalNode, metaclass=_MetaStructBase):
                 and user_version != attr.userver):
                 continue
             #print("user version check passed") # debug
+
+            # check user version 2
+            if (attr.userver2 is not None and user_version_2 is not None
+                and user_version_2 != attr.userver2):
+                continue
+            #print("user version 2 check passed") # debug
 
             # check conditions
             if attr.cond is not None and not attr.cond.eval(self):
